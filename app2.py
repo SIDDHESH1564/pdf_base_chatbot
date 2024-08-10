@@ -27,7 +27,7 @@ def get_pdf_text(pdf_docs):
 
 def summarize_pdf_content(text):
     response = openai.ChatCompletion.create(
-        model="gpt-4",
+        model="gpt-4o",
         messages=[
             {"role": "user", "content": f"Summarize the following text and highlight the key points:\n\n{text}"}
         ],
@@ -74,7 +74,7 @@ def fetch_additional_info_from_gpt4(query, context):
     full_prompt = f"Based on the following context from the PDFs and summary:\n\n{context}\n\nUser's query:\n{query}\n\nGenerate a final response considering all the information."
     
     response = openai.ChatCompletion.create(
-        model="gpt-4",
+        model="gpt-4o",
         messages=[
             {"role": "user", "content": full_prompt}
         ],
