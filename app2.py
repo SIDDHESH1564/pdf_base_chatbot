@@ -1,0 +1,124 @@
+import streamlit as st
+from dotenv import load_dotenv
+from PyPDF2 import PdfReader 
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.chat_models import ChatOpenAI
+from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationalRetrievalChain
+from htmlTemplates import css, bot_template, user_template
+import openai
+import os
+
+# Load environment variables
+load_dotenv()
+
+# Set your OpenAI API key
+openai.api_key = os.getenv('OPENAI_API_KEY')
+
+def get_pdf_text(pdf_docs):
+    text = ""
+    for pdf in pdf_docs:
+        pdf_reader = PdfReader(pdf)
+        for page in pdf_reader.pages:
+            text += page.extract_text() or ""
+    return text
+
+def summarize_pdf_content(text):
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "user", "content": f"Summarize the following text and highlight the key points:\n\n{text}"}
+        ],
+        max_tokens=1500
+    )
+    summary = response.choices[0].message['content'].strip()
+    return summary
+
+def get_text_chunks_with_summary(text):
+    # Generate summary and key points
+    summary = summarize_pdf_content(text)
+    
+    # Append summary to the original text
+    text_with_summary = summary + "\n\n" + text
+    
+    # Split the combined text into chunks
+    text_splitter = CharacterTextSplitter(
+        separator="\n",
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len
+    )
+    chunks = text_splitter.split_text(text_with_summary)
+    return chunks, summary
+
+def get_vectorstore(text_chunks):
+    embeddings = OpenAIEmbeddings()
+    vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+    return vectorstore
+
+def get_conversation_chain(vectorstore):
+    llm = ChatOpenAI()
+    memory = ConversationBufferMemory(
+        memory_key='chat_history', return_messages=True)
+    conversation_chain = ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=vectorstore.as_retriever(),
+        memory=memory
+    )
+    return conversation_chain
+
+def fetch_additional_info_from_gpt4(query, context):
+    # Prepare prompt for GPT-4 with the context and user's query
+    full_prompt = f"Based on the following context from the PDFs and summary:\n\n{context}\n\nUser's query:\n{query}\n\nGenerate a final response considering all the information."
+    
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "user", "content": full_prompt}
+        ],
+        max_tokens=500
+    )
+    return response.choices[0].message['content'].strip()
+
+def handle_userinput(user_question):
+    if st.session_state.conversation:
+        # Query the vector store
+        response = st.session_state.conversation({'question': user_question})
+        chat_history = response['chat_history']
+        
+        # Collect context from the chat history (relevant PDF chunks)
+        context = "\n\n".join([message.content for message in chat_history if message.content])
+        
+        # Generate the final response from GPT-4
+        final_response = fetch_additional_info_from_gpt4(user_question, context)
+        
+        # Display the final response
+        st.write(bot_template.replace("{{MSG}}", final_response), unsafe_allow_html=True)
+
+def main():
+    st.set_page_config(page_title="Chat with multiple PDFs", page_icon=":books:")
+    st.write(css, unsafe_allow_html=True)
+
+    if "conversation" not in st.session_state:
+        st.session_state.conversation = None
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    user_question = st.text_input("Ask a question about your documents:")
+    if user_question:
+        handle_userinput(user_question)
+
+    with st.sidebar:
+        st.subheader("Your documents")
+        pdf_docs = st.file_uploader("Upload your PDFs here and click on 'Process'", accept_multiple_files=True)
+        if st.button("Process") and pdf_docs:
+            with st.spinner("Processing"):
+                raw_text = get_pdf_text(pdf_docs)
+                text_chunks, summary = get_text_chunks_with_summary(raw_text)
+                vectorstore = get_vectorstore(text_chunks)
+                st.session_state.conversation = get_conversation_chain(vectorstore)
+
+if __name__ == '__main__':
+    main()
